@@ -1,69 +1,133 @@
 # The First-Order Nomoto Model
 
-This document explains the first-order Nomoto model, which drives the ship kinematics in the `NomotoEnv` simulation.
+This is the ship model implemented by `NomotoEnv` in [src/env.py](../src/env.py). The MPC baseline
+predicts with the same model, so read the discretization at the end of this page before
+[mpc_formulation.md](./mpc_formulation.md).
 
-## 1. Background
+## Background
 
-Maneuvering a surface vessel is a hydrodynamic process with 3 degrees of freedom (surge, sway, and yaw).
+Steering a ship is a hydrodynamic problem in three degrees of freedom, namely surge (forward
+motion), sway (sideways drift), and yaw (rotation). Solving all three together is costly and
+requires hull coefficients that are rarely available.
 
-In 1957, K. Nomoto showed that for course-keeping and steering at a roughly constant forward speed, these equations can be reduced to a linear transfer function relating the **rudder angle ($\delta$)** to the **yaw rate ($r$)**.
+In 1957 K. Nomoto showed that for course-keeping at a roughly constant forward speed, the three
+coupled equations reduce to one transfer function from rudder angle $\delta$ to yaw rate $r$. Surge
+is assumed constant and sway is absorbed into the yaw response, which leaves one ordinary
+differential equation with two parameters. The model is still a common starting point for autopilot
+design.
 
-This is the first-order Nomoto model, and it is a common starting point for autopilot design.
+The result is second order,
 
-## 2. The Differential Equation
+$$ T_1 T_2 \ddot{r} + (T_1 + T_2)\dot{r} + r = K\left(\delta + T_3 \dot{\delta}\right) $$
 
-The continuous-time first-order Nomoto equation is defined as:
+but the fast mode contributes little at course-keeping frequencies. Reducing it to one effective
+time constant $T = T_1 + T_2 - T_3$ gives the first-order form used here.
+
+## Model equation
+
 $$ T \dot{r}(t) + r(t) = K \delta(t) $$
 
-Where:
-*   **$r(t)$** : Yaw rate (the rotational speed of the vessel, typically in radians/second).
-*   **$\dot{r}(t)$** : Yaw acceleration (radians/second$^2$).
-*   **$\delta(t)$** : Commanded physical rudder angle (radians).
-*   **$K$** : The ship's turning gain (1/seconds).
-*   **$T$** : The ship's time constant or inertia (seconds).
+| Symbol | Meaning | Units |
+| --- | --- | --- |
+| $r$ | Yaw rate, the rotational speed of the vessel | rad/s |
+| $\dot{r}$ | Yaw acceleration | rad/s² |
+| $\delta$ | Commanded rudder angle | rad |
+| $K$ | Turning gain | 1/s |
+| $T$ | Time constant, the rotational inertia | s |
 
-The heading of the vessel, **$\psi(t)$**, is simply the integral of the yaw rate:
+Heading is the integral of the yaw rate.
+
 $$ \dot{\psi}(t) = r(t) $$
 
-## 3. Ship Dynamic Parameters
+Here $\psi$ is stored as the heading error, since the target course is fixed at zero. Steering onto
+course therefore means driving $\psi \rightarrow 0$.
 
-The ship's dynamics are set by the two parameters $K$ and $T$. In this project they are hidden from the controller and randomized each episode, so the controller has to adapt rather than memorize one ship.
+## Physical meaning of $K$ and $T$
 
-Both parameters fall out of the ship's yaw equation of motion. For a simplified yaw-only model:
+Both parameters follow from the ship's yaw equation of motion. For a yaw-only model,
+
 $$ (I_z - N_{\dot r})\,\dot r = N_r\,r + N_\delta\,\delta $$
-Matching this to the Nomoto form $T\dot r + r = K\delta$ gives the expressions below.
 
-### The Turning Gain ($K$)
-$K$ represents the turning ability of the vessel. 
-If the rudder is held at a constant angle $\delta_{ss}$, the yaw acceleration eventually becomes zero ($\dot{r} = 0$). The equation simplifies to:
+where $I_z$ is the hull's yaw moment of inertia, $N_{\dot r}$ the added inertia from the water the
+hull drags with it, $N_r$ the yaw damping, and $N_\delta$ the yaw moment produced per unit rudder
+angle. Dividing through by $-N_r$ gives the Nomoto form.
+
+$$ \underbrace{\frac{I_z - N_{\dot r}}{-N_r}}_{T}\,\dot r + r = \underbrace{\frac{N_\delta}{-N_r}}_{K}\,\delta $$
+
+A directionally stable ship has $N_r < 0$, so both $K$ and $T$ come out positive. This is why
+`SysIDNet` applies a Softplus to its output head. A negative estimate has no meaning, and a
+near-zero $\hat{T}$ makes the $1/\hat{T}$ terms in the MPC matrices diverge.
+
+### Turning gain $K$
+
+$K$ describes the turning ability of the vessel. If the rudder is held at a constant angle
+$\delta_{ss}$, the yaw acceleration eventually reaches zero and leaves a steady turn rate.
+
 $$ r_{ss} = K \delta_{ss} $$
 
-From the yaw equation of motion, $K$ is the rudder's yaw moment over the yaw damping:
-$$ K = \frac{N_\delta}{-N_r} $$
-where $N_\delta$ is the yaw moment produced per unit rudder angle. In non-dimensional form it scales with ship length $L$ and forward speed $U$ as:
-$$ K = K'\,\frac{U}{L} $$
+A high $K$ means the ship answers the rudder sharply. A low $K$ means it resists turning even at
+full deflection. In non-dimensional form $K$ scales with ship length $L$ and forward speed $U$ as
+$K = K'\,U/L$, so the same hull answers the rudder faster at speed.
 
-A high $K$ value means the ship is highly responsive to the rudder and will turn very sharply. A low $K$ value means the ship resists turning even at maximum rudder deflection.
+### Time constant $T$
 
-### Rotational Inertia ($T$)
-$T$ measures the vessel's rotational inertia. It sets how quickly the ship responds to the rudder. Which indicates how long the yaw rate takes to build up to its steady-state value $r_{ss}$.
+$T$ is the ship's rotational inertia divided by its yaw damping, and it sets how long the yaw rate
+takes to build up to $r_{ss}$. After a step change in rudder angle, the yaw rate reaches about 63%
+of its steady value in $T$ seconds.
 
-From the same yaw equation of motion, $T$ is the ship's effective rotational inertia over its yaw damping:
-$$ T = \frac{I_z - N_{\dot r}}{-N_r} $$
-where $I_z - N_{\dot r}$ is the hull inertia plus hydrodynamic added inertia. In non-dimensional form it scales with ship length $L$ and forward speed $U$ as:
-$$ T = T'\,\frac{L}{U} $$
+A high $T$ describes a sluggish ship. A loaded tanker takes a long time to start turning, and just
+as long to stop once the rudder is centred. A low $T$ describes a ship that reaches its steady turn
+rate almost at once, such as a patrol boat. The non-dimensional form is $T = T'\,L/U$, so longer
+hulls and lower speeds both make the response slower.
 
-A high $T$ value means the ship is sluggish — a massive oil tanker takes a long time to start turning, and a long time to stop once the rudder is centered. A low $T$ value means the ship is nimble — a light patrol boat reaches its steady-state turn rate almost immediately.
+### Parameter ranges
 
-## 4. Discrete Time Integration (Euler Method)
+$K$ and $T$ are re-sampled uniformly at every episode reset and are never shown to the controller,
+so a controller has to work across the range rather than fit one ship. The ranges are set in
+[conf/env/nomoto.yaml](../conf/env/nomoto.yaml).
 
-Because our environment runs inside a computer simulation utilizing discrete steps, the continuous differential equations must be solved numerically. We use the Euler Forward Integration method with a time step of $dt$.
+| Parameter | Range | Meaning |
+| --- | --- | --- |
+| $K$ | 0.1 to 0.5 1/s | weak to strong rudder authority |
+| $T$ | 5 to 30 s | quick to sluggish response |
 
-To find the yaw rate at the next timestep $t+1$:
-$$ \dot{r}(t) = \frac{K \delta(t) - r(t)}{T} $$
-$$ r(t+1) = r(t) + \dot{r}(t) \cdot dt $$
+## Discrete-time integration
 
-To find the new heading:
-$$ \psi(t+1) = \psi(t) + r(t+1) \cdot dt $$
+The simulation advances in fixed steps of $dt$, 1 second by default, so the differential equations
+are integrated numerically. Each call to `NomotoEnv.step` applies the rudder, then updates the
+states in this order.
 
-This discrete formulation forms the mathematical baseline of the `NomotoEnv` function and the discrete state-space transition matrices used in the MPC baseline.
+$$ \dot{r}_t = \frac{K \delta_t - r_t}{T} $$
+
+$$ r_{t+1} = r_t + \dot{r}_t \, dt $$
+
+$$ \psi_{t+1} = \psi_t + r_{t+1} \, dt $$
+
+$$ I_{t+1} = I_t + \psi_{t+1} \, dt $$
+
+The ordering matters. Heading is updated from the new yaw rate rather than the previous one, and the
+integral term $I$ from the new heading, which makes the scheme semi-implicit rather than plain
+forward Euler. The MPC's $A$ and $B$ matrices follow the same order, which is where their $dt^2$ and
+$dt^3$ entries come from.
+
+Wave action is applied last, as zero-mean Gaussian noise on the yaw rate.
+
+$$ r_{t+1} \leftarrow r_{t+1} + w_t, \qquad w_t \sim \mathcal{N}(0, \sigma^2) $$
+
+Since the noise is applied after the heading update, a disturbance at step $t$ reaches $\psi$ only
+at step $t+1$.
+
+## Assumptions and limitations
+
+The model builds in the following assumptions.
+
+- **The model is linear.** Rudder force saturates at large deflections on a real ship, and yaw
+  damping is not linear in $r$. The model fits small course corrections and degrades on hard turns.
+- **Forward speed is constant.** A real ship loses speed in a turn, which changes both $K$ and $T$
+  while it is turning. Here they are fixed for the length of an episode.
+- **Position is not modelled.** The state tracks heading only, so the model has no notion of
+  cross-track error. The top-down view in the visualizer builds a path by advancing the ship at a
+  constant speed along its heading. That path is drawn, not simulated.
+- **Steering gear dynamics are omitted.** The commanded rudder angle takes effect at once, with no
+  slew rate limit. The reward's $\Delta\delta$ penalty and the MPC's rate bound represent the cost
+  of moving a real rudder quickly.
