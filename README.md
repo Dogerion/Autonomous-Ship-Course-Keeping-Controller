@@ -57,8 +57,8 @@ estimates are explicit, the visualizer can plot them against the true `K`/`T`.
 Dependencies are managed with [`uv`](https://github.com/astral-sh/uv), on Python 3.13.
 
 ```bash
-git clone https://github.com/Dogerion/MARIN.git
-cd MARIN
+git clone https://github.com/Dogerion/Autonomous-Ship-Course-Keeping-Controller.git
+cd Autonomous-Ship-Course-Keeping-Controller
 uv sync
 source .venv/bin/activate
 ```
